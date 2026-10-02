@@ -1,153 +1,87 @@
 import asyncio
 import os
-import shutil
-import time
-from enum import Enum
-from pathlib import Path
-
-from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, WebSocket, UploadFile, File, BackgroundTasks
 from fastapi.responses import HTMLResponse
+import cloudinary
+import cloudinary.uploader
 
-BASE_DIR = Path(__file__).resolve().parent
+# Configure Cloudinary (Make sure to set these Environment Variables in your Render dashboard)
+cloudinary.config( 
+  cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "YOUR_CLOUD_NAME"), 
+  api_key = os.getenv("CLOUDINARY_API_KEY", "YOUR_API_KEY"), 
+  api_secret = os.getenv("CLOUDINARY_API_SECRET", "YOUR_API_SECRET") 
+)
 
 app = FastAPI()
+clients = set()
 
-STATIC_DIR = BASE_DIR / "static"
-os.makedirs(STATIC_DIR, exist_ok=True)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+system_state = "SAFE" # Options: SAFE, GRACE_PERIOD, TRIGGERED
+GRACE_PERIOD_DURATION = 55.0
+latest_image_url = ""
 
-class SystemState(str, Enum):
-    IDLE = "IDLE"
-    PENDING_AUTH = "PENDING"
-    AUTHENTICATED = "VERIFIED"
-    ALARM_ACTIVE = "ALARM"
-
-current_system_state = SystemState.IDLE
-grace_period_start_time = 0.0
-GRACE_PERIOD_DURATION = 10.0
-
-grace_timer_task = None
-connected_websockets: list[WebSocket] = []
-
-def get_grace_seconds_remaining():
-    if current_system_state == SystemState.PENDING_AUTH:
-        elapsed = time.time() - grace_period_start_time
-        return int(max(0, GRACE_PERIOD_DURATION - elapsed))
-    return 0
-
-async def notify_clients_of_state_change():
-    state_data = {
-        "state": current_system_state.value,
-        "grace_seconds_left": get_grace_seconds_remaining(),
-        "door_img": "/static/door.jpg" if (STATIC_DIR / "door.jpg").exists() else "",
-        "indoor_img": "/static/indoor.jpg" if (STATIC_DIR / "indoor.jpg").exists() else ""
-    }
-    
-    dead_sockets = []
-    for ws in connected_websockets:
+async def broadcast_state():
+    """Sends the current alarm state and latest photo URL to all connected web pages."""
+    message = {"state": system_state, "image_url": latest_image_url}
+    for client in clients.copy():
         try:
-            await ws.send_json(state_data)
+            await client.send_json(message)
         except Exception:
-            dead_sockets.append(ws)
-            
-    for dead in dead_sockets:
-        connected_websockets.remove(dead)
+            clients.remove(client)
 
-async def start_grace_period_countdown():
-    global current_system_state
-    while current_system_state == SystemState.PENDING_AUTH:
-        remaining = get_grace_seconds_remaining()
-        await notify_clients_of_state_change()
-        
-        if remaining <= 0:
-            print("[SERVER] Grace period expired! Transitioning to ALARM.")
-            current_system_state = SystemState.ALARM_ACTIVE
-            await notify_clients_of_state_change()
-            break
-            
-        await asyncio.sleep(1)
+async def grace_period_timer():
+    """Waits 55 seconds, then triggers the alarm if not manually disarmed."""
+    global system_state
+    await asyncio.sleep(GRACE_PERIOD_DURATION)
+    # If the timer finishes and the system hasn't been disarmed back to SAFE, trigger it
+    if system_state == "GRACE_PERIOD":
+        system_state = "TRIGGERED"
+        await broadcast_state()
 
-@app.get("/", response_class=HTMLResponse)
-async def get_dashboard():
-    html_path = BASE_DIR / "index.html"
-    if html_path.exists():
-        with open(html_path, "r", encoding="utf-8") as f:
-            return f.read()
-    return f"<h1>index.html not found!</h1><p>Looking in: {html_path}</p>"
+@app.get("/")
+async def get_index():
+    with open("index.html", "r") as f:
+        return HTMLResponse(f.read())
 
 @app.post("/api/esp/door-opened")
-async def esp_door_opened():
-    global current_system_state, grace_period_start_time, grace_timer_task
-    if current_system_state != SystemState.IDLE:
-        return {"status": "ignored"}
-    
-    print("[ESP32] Door Opened! Grace Period Initiated.")
-    current_system_state = SystemState.PENDING_AUTH
-    grace_period_start_time = time.time()
-    
-    if grace_timer_task and not grace_timer_task.done():
-        grace_timer_task.cancel()
-        
-    grace_timer_task = asyncio.create_task(start_grace_period_countdown())
-    return {"status": "ok"}
+async def door_opened(background_tasks: BackgroundTasks):
+    global system_state
+    if system_state == "SAFE":
+        system_state = "GRACE_PERIOD"
+        background_tasks.add_task(grace_period_timer)
+        await broadcast_state()
+    return {"status": "Timer started"}
 
 @app.post("/api/esp/upload-snapshot")
-async def esp_upload_snapshot(file: UploadFile = File(...)):
-    file_location = STATIC_DIR / "door.jpg"
-    with open(file_location, "wb+") as f:
-        shutil.copyfileobj(file.file, f)
-    
-    shutil.copyfile(file_location, STATIC_DIR / "indoor.jpg")
-    await notify_clients_of_state_change()
-    return {"info": "snapshot uploaded"}
+async def upload_snapshot(file: UploadFile = File(...)):
+    global latest_image_url
+    try:
+        # Upload the JPEG to Cloudinary and grab the secure URL
+        result = cloudinary.uploader.upload(file.file)
+        latest_image_url = result.get("secure_url")
+        
+        # Instantly update the web dashboard with the new photo
+        await broadcast_state()
+        return {"status": "uploaded", "url": latest_image_url}
+    except Exception as e:
+        return {"error": str(e)}
 
-@app.get("/api/esp/poll-status")
-async def esp_poll_status():
-    return {"verified": (current_system_state == SystemState.AUTHENTICATED)}
-
+# --- NEW: Handles the Web Dashboard Disarm Button ---
 @app.post("/api/app/verify")
 async def verify_user():
-    global current_system_state, grace_timer_task
-    print("[DASHBOARD] User Authenticated!")
-    
-    if grace_timer_task and not grace_timer_task.done():
-        grace_timer_task.cancel()
-        
-    current_system_state = SystemState.AUTHENTICATED
-    await notify_clients_of_state_change()
-    
-    asyncio.create_task(reset_demo_state(5))
-    return {"status": "verified"}
-
-async def reset_demo_state(delay_seconds: int):
-    await asyncio.sleep(delay_seconds)
-    global current_system_state
-    current_system_state = SystemState.IDLE
-    
-    door_file = STATIC_DIR / "door.jpg"
-    indoor_file = STATIC_DIR / "indoor.jpg"
-    if door_file.exists(): os.remove(door_file)
-    if indoor_file.exists(): os.remove(indoor_file)
-    
-    await notify_clients_of_state_change()
-    print("[SERVER] Reset to IDLE.")
+    global system_state
+    # Instantly reset the system back to normal
+    system_state = "SAFE"
+    await broadcast_state()
+    return {"status": "System disarmed and reset to SAFE"}
 
 @app.websocket("/ws")
-@app.websocket("/ws/app-updates")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    connected_websockets.append(websocket)
-    
-    await websocket.send_json({
-        "state": current_system_state.value,
-        "grace_seconds_left": get_grace_seconds_remaining(),
-        "door_img": "/static/door.jpg" if (STATIC_DIR / "door.jpg").exists() else "",
-        "indoor_img": "/static/indoor.jpg" if (STATIC_DIR / "indoor.jpg").exists() else ""
-    })
-    
+    clients.add(websocket)
+    # Send current state and photo to the newly connected user
+    await websocket.send_json({"state": system_state, "image_url": latest_image_url})
     try:
         while True:
             await websocket.receive_text()
-    except WebSocketDisconnect:
-        connected_websockets.remove(websocket)
+    except Exception:
+        clients.remove(websocket)
