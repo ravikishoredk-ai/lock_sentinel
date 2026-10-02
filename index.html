@@ -15,7 +15,6 @@
         .status-badge { display: inline-block; padding: 10px 20px; border-radius: 50px; font-weight: bold; font-size: 18px; margin: 15px 0; }
         .bg-idle { background: #065f46; color: #34d399; }
         .bg-pending { background: #9a3412; color: #fb923c; }
-        .bg-verified { background: #1e3a8a; color: #60a5fa; }
         .bg-alarm { background: #881337; color: #f43f5e; animation: pulse 1s infinite; }
 
         @keyframes pulse {
@@ -26,10 +25,10 @@
 
         .timer { font-size: 52px; font-weight: 800; color: #f97316; margin: 10px 0; }
         
-        .cam-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
+        .cam-grid { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 20px; }
         .cam-box { background: #0f172a; border-radius: 8px; padding: 6px; border: 1px solid #334155; }
-        .cam-box img { width: 100%; height: 120px; object-fit: cover; border-radius: 6px; }
-        .cam-label { font-size: 12px; color: #64748b; margin-top: 4px; }
+        .cam-box img { width: 100%; height: auto; object-fit: cover; border-radius: 6px; }
+        .cam-label { font-size: 14px; color: #64748b; margin-top: 4px; font-weight: bold;}
 
         .btn { width: 100%; padding: 16px; border: none; border-radius: 12px; font-size: 18px; font-weight: bold; cursor: pointer; transition: 0.2s; margin-top: 20px; }
         .btn-auth { background: #2563eb; color: white; }
@@ -50,7 +49,7 @@
         
         <div id="countdownBox" class="hidden">
             <div style="color: #94a3b8; font-size: 13px; letter-spacing: 0.5px;">GRACE WINDOW EXPIRING IN</div>
-            <div id="timerText" class="timer">10</div>
+            <div id="timerText" class="timer">55</div>
         </div>
 
         <button id="btnAuth" class="btn btn-auth hidden" onclick="authenticateUser()">AUTHENTICATE & DISARM</button>
@@ -58,11 +57,7 @@
         <div id="camSection" class="cam-grid hidden">
             <div class="cam-box">
                 <img id="imgDoor" src="" alt="Door Camera">
-                <div class="cam-label">Door Camera</div>
-            </div>
-            <div class="cam-box">
-                <img id="imgIndoor" src="" alt="Indoor Camera">
-                <div class="cam-label">Indoor Camera</div>
+                <div class="cam-label">Door Camera Snapshot</div>
             </div>
         </div>
     </div>
@@ -70,7 +65,10 @@
     <script>
         let audioCtx = null;
         let sirenInterval = null;
+        let countdownInterval = null;
+        let currentSeconds = 55;
 
+        // Audio System
         function initAudioContext() {
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -133,6 +131,28 @@
             }
         }
 
+        // Ticking Countdown Logic
+        function startCountdown() {
+            if (countdownInterval) clearInterval(countdownInterval);
+            currentSeconds = 55;
+            document.getElementById('timerText').innerText = currentSeconds;
+            
+            countdownInterval = setInterval(() => {
+                currentSeconds--;
+                if (currentSeconds >= 0) {
+                    document.getElementById('timerText').innerText = currentSeconds;
+                } else {
+                    clearInterval(countdownInterval);
+                }
+            }, 1000);
+        }
+
+        function stopCountdown() {
+            if (countdownInterval) clearInterval(countdownInterval);
+            document.getElementById('timerText').innerText = "55";
+        }
+
+        // WebSocket Connection
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
         let socket;
@@ -150,51 +170,52 @@
             };
         }
 
+        // UI State Updates
         function updateUI(data) {
             const badge = document.getElementById('statusBadge');
             const countdownBox = document.getElementById('countdownBox');
-            const timerText = document.getElementById('timerText');
             const btnAuth = document.getElementById('btnAuth');
             const camSection = document.getElementById('camSection');
 
-            if (data.state === 'IDLE') {
+            if (data.state === 'SAFE') {
                 stopSirenSound();
+                stopCountdown();
                 badge.className = 'status-badge bg-idle';
                 badge.innerText = '🛡️ ARMED';
                 countdownBox.classList.add('hidden');
                 btnAuth.classList.add('hidden');
                 camSection.classList.add('hidden');
             } 
-            else if (data.state === 'PENDING') {
+            else if (data.state === 'GRACE_PERIOD') {
                 stopSirenSound();
                 badge.className = 'status-badge bg-pending';
                 badge.innerText = '⚠️ BREACH DETECTED';
                 countdownBox.classList.remove('hidden');
                 btnAuth.classList.remove('hidden');
                 camSection.classList.add('hidden');
-                timerText.innerText = data.grace_seconds_left;
+                
+                // Start the visual 55-second countdown only if it isn't running
+                if (!countdownInterval) {
+                    startCountdown();
+                }
             } 
-            else if (data.state === 'VERIFIED') {
-                stopSirenSound();
-                badge.className = 'status-badge bg-verified';
-                badge.innerText = '✅ ACCESS GRANTED';
-                countdownBox.classList.add('hidden');
-                btnAuth.classList.add('hidden');
-                camSection.classList.add('hidden');
-            } 
-            else if (data.state === 'ALARM') {
+            else if (data.state === 'TRIGGERED') {
                 playSirenSound();
+                stopCountdown(); // Stop the visual timer since we are fully triggered
                 badge.className = 'status-badge bg-alarm';
                 badge.innerText = '🚨 INTRUSION ALARM!';
                 countdownBox.classList.add('hidden');
                 btnAuth.classList.add('hidden');
                 camSection.classList.remove('hidden');
 
-                if (data.door_img) document.getElementById('imgDoor').src = data.door_img + "?t=" + new Date().getTime();
-                if (data.indoor_img) document.getElementById('imgIndoor').src = data.indoor_img + "?t=" + new Date().getTime();
+                // Load the Cloudinary image URL from the Python backend
+                if (data.image_url) {
+                    document.getElementById('imgDoor').src = data.image_url + "?t=" + new Date().getTime();
+                }
             }
         }
 
+        // Disarm Button (You will need an endpoint for this in server.py later!)
         function authenticateUser() {
             initAudioContext();
             fetch('/api/app/verify', { method: 'POST' });
