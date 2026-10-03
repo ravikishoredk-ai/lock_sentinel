@@ -11,7 +11,7 @@ app = FastAPI(title="Lock Sentinel Security System")
 # ====================================================
 # HTTP EMAIL CONFIGURATION (BREVO API)
 # ====================================================
-BREVO_API_KEY = os.getenv("BREVO_API_KEY", "xsmtpsib-f1ef3ee4f1e21d10027ec5bdbd6937603ee19c07b58269dd6125ec179b69c27a-8bEiHMkyzFWDZLUF")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "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")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "ravikishore.rtl@gmail.com")
 RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL", "ravikishore.rtl@gmail.com") 
 
