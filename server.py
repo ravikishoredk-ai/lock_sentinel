@@ -7,7 +7,7 @@ app = Flask(__name__)
 # ===========================
 # FAST2SMS CONFIGURATION
 # ===========================
-FAST2SMS_API_KEY = " BMEk1yoSKlcCaWAUtgI248ZsV7ODGJdmQ0Pz3TfFjRYh5q6HNwuAa4FLy20PclYIwkWfzmVG3oN1qseJ"
+FAST2SMS_API_KEY = "BMEk1yoSKlcCaWAUtgI248ZsV7ODGJdmQ0Pz3TfFjRYh5q6HNwuAa4FLy20PclYIwkWfzmVG3oN1qseJ"
 YOUR_PHONE_NUMBER = "9363730659"
 
 # ===========================
