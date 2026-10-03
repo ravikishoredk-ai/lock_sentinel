@@ -1,5 +1,7 @@
 import os
-import requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import cloudinary
 import cloudinary.uploader
 from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
@@ -9,14 +11,15 @@ from typing import List
 app = FastAPI(title="Lock Sentinel Security System")
 
 # ====================================================
-# FAST2SMS CONFIGURATION
+# EMAIL NOTIFICATION CONFIGURATION
 # ====================================================
-FAST2SMS_API_KEY = "BMEk1yoSKlcCaWAUtgI248ZsV7ODGJdmQ0Pz3TfFjRYh5q6HNwuAa4FLy20PclYIwkWfzmVG3oN1qseJ"
-YOUR_PHONE_NUMBER = "9363730659"
+# Put your Gmail address and 16-character app password here:
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "ravikishore.rtl@gmail.com")
+APP_PASSWORD = os.getenv("APP_PASSWORD", "pawz ktrv bzsy nmmp")
+RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL", "ravikishore.rtl@gmail.com") # Can be the same as SENDER_EMAIL
 
 # ====================================================
 # CLOUDINARY CONFIGURATION
-# (Replace with your Cloudinary credentials if not using env vars)
 # ====================================================
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME", "w8jdhijo"),
@@ -24,11 +27,10 @@ cloudinary.config(
     api_secret=os.getenv("CLOUDINARY_API_SECRET", "LK0eKy_c13qtBUdfqNRGhP8Q35c")
 )
 
-# System state and live snapshot holder
 system_state = {"status": "Secure", "latest_image_url": ""}
 
 # ====================================================
-# WEBSOCKET MANAGER FOR LIVE FEED / ALERTS
+# WEBSOCKET MANAGER FOR LIVE FEED
 # ====================================================
 class ConnectionManager:
     def __init__(self):
@@ -52,27 +54,45 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # ====================================================
-# FAST2SMS HELPER FUNCTION
+# GMAIL ALERT HELPER FUNCTION
 # ====================================================
-def send_sms_alert():
-    """Sends SMS breach alert via Fast2SMS Quick Route."""
-    url = "https://www.fast2sms.com/dev/bulkV2"
-    payload = {
-        "route": "q",
-        "message": "⚠️ SECURITY ALERT: Lock Sentinel detected a breach! Check the dashboard.",
-        "language": "english",
-        "flash": 0,
-        "numbers": YOUR_PHONE_NUMBER
-    }
-    headers = {
-        "authorization": FAST2SMS_API_KEY,
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
+def send_email_alert():
+    """Sends an HTML email with dashboard and disarm links."""
     try:
-        response = requests.post(url, data=payload, headers=headers, timeout=10)
-        print("Fast2SMS Response:", response.text)
+        # Render automatically provides RENDER_EXTERNAL_URL during deployment
+        app_url = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:5000")
+        disarm_link = f"{app_url}/api/disarm"
+        dashboard_link = f"{app_url}/"
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "⚠️ SECURITY ALERT: Lock Sentinel Breach Detected!"
+        msg["From"] = f"Lock Sentinel <{SENDER_EMAIL}>"
+        msg["To"] = RECEIVER_EMAIL
+
+        html = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; text-align: center; padding: 20px;">
+            <h2 style="color: #d32f2f;">⚠️ SECURITY ALERT: Breach Detected!</h2>
+            <p>Your ESP32-CAM has detected an intrusion at the door.</p>
+            <br><br>
+            <a href="{dashboard_link}" style="padding: 12px 24px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">View Live Camera</a>
+            <br><br><br>
+            <a href="{disarm_link}" style="padding: 12px 24px; background-color: #28a745; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">Disarm System</a>
+          </body>
+        </html>
+        """
+        
+        part = MIMEText(html, "html")
+        msg.attach(part)
+
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(SENDER_EMAIL, APP_PASSWORD)
+        server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
+        server.quit()
+        print("Alert email sent successfully!")
     except Exception as e:
-        print("Failed to send SMS:", e)
+        print("Failed to send email:", e)
 
 # ====================================================
 # ESP32 HARDWARE ENDPOINTS
@@ -81,21 +101,18 @@ def send_sms_alert():
 async def door_opened_trigger():
     system_state["status"] = "BREACH DETECTED"
     
-    # 1. Send SMS alert
-    send_sms_alert()
+    send_email_alert()
     
-    # 2. Broadcast breach event to connected dashboard clients
     await manager.broadcast({
         "event": "breach",
         "status": system_state["status"]
     })
     
-    return JSONResponse(status_code=200, content={"status": "success", "message": "Alert triggered and SMS sent"})
+    return JSONResponse(status_code=200, content={"status": "success", "message": "Email alert sent"})
 
 @app.post("/api/esp/upload-snapshot")
 async def upload_snapshot(file: UploadFile = File(...)):
     try:
-        # Upload directly to Cloudinary
         contents = await file.read()
         upload_result = cloudinary.uploader.upload(
             contents,
@@ -104,7 +121,6 @@ async def upload_snapshot(file: UploadFile = File(...)):
         image_url = upload_result.get("secure_url", "")
         system_state["latest_image_url"] = image_url
 
-        # Broadcast new image to connected dashboard clients
         await manager.broadcast({
             "event": "new_snapshot",
             "image_url": image_url
@@ -115,14 +131,36 @@ async def upload_snapshot(file: UploadFile = File(...)):
         print("Cloudinary upload failed:", e)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-@app.post("/api/esp/reset")
-async def reset_system():
+# ====================================================
+# NEW: ONE-CLICK DISARM ENDPOINT (GET)
+# ====================================================
+@app.get("/api/disarm", response_class=HTMLResponse)
+async def disarm_system_via_email():
     system_state["status"] = "Secure"
     await manager.broadcast({
         "event": "reset",
         "status": system_state["status"]
     })
-    return JSONResponse(status_code=200, content={"status": "success", "message": "System reset to secure"})
+    
+    # This HTML is what you see on your phone when you click the email link
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <body style="background-color: #121212; color: #fff; text-align: center; padding: 50px; font-family: Arial;">
+        <h1 style="color: #4caf50;">✅ System Disarmed</h1>
+        <p>The Lock Sentinel is now Secure.</p>
+        <a href="/" style="color: #90caf9; text-decoration: none;">Return to Dashboard</a>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+# Keep the old POST reset route just in case the ESP32 needs it
+@app.post("/api/esp/reset")
+async def reset_system():
+    system_state["status"] = "Secure"
+    await manager.broadcast({"event": "reset", "status": system_state["status"]})
+    return JSONResponse(status_code=200, content={"status": "success"})
 
 # ====================================================
 # WEBSOCKET ENDPOINT
@@ -130,7 +168,6 @@ async def reset_system():
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
-    # Send initial state on connection
     await websocket.send_json({
         "event": "init",
         "status": system_state["status"],
