@@ -1,87 +1,116 @@
-import asyncio
 import os
-from fastapi import FastAPI, WebSocket, UploadFile, File, BackgroundTasks
-from fastapi.responses import HTMLResponse
-import cloudinary
-import cloudinary.uploader
+import requests
+from flask import Flask, request, jsonify, send_file, render_template_string
 
-# Configure Cloudinary (Make sure to set these Environment Variables in your Render dashboard)
-cloudinary.config( 
-  cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "YOUR_CLOUD_NAME"), 
-  api_key = os.getenv("CLOUDINARY_API_KEY", "YOUR_API_KEY"), 
-  api_secret = os.getenv("CLOUDINARY_API_SECRET", "YOUR_API_SECRET") 
-)
+app = Flask(__name__)
 
-app = FastAPI()
-clients = set()
+# ===========================
+# FAST2SMS CONFIGURATION
+# ===========================
+FAST2SMS_API_KEY = " BMEk1yoSKlcCaWAUtgI248ZsV7ODGJdmQ0Pz3TfFjRYh5q6HNwuAa4FLy20PclYIwkWfzmVG3oN1qseJ"
+YOUR_PHONE_NUMBER = "9363730659"
 
-system_state = "SAFE" # Options: SAFE, GRACE_PERIOD, TRIGGERED
-GRACE_PERIOD_DURATION = 55.0
-latest_image_url = ""
+# ===========================
+# STORAGE SETUP
+# ===========================
+UPLOAD_FOLDER = 'uploads'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+PHOTO_PATH = os.path.join(UPLOAD_FOLDER, 'esp32_cam.jpg')
 
-async def broadcast_state():
-    """Sends the current alarm state and latest photo URL to all connected web pages."""
-    message = {"state": system_state, "image_url": latest_image_url}
-    for client in clients.copy():
-        try:
-            await client.send_json(message)
-        except Exception:
-            clients.remove(client)
+# Global state to track if the alarm is triggered
+system_status = "Secure"
 
-async def grace_period_timer():
-    """Waits 55 seconds, then triggers the alarm if not manually disarmed."""
-    global system_state
-    await asyncio.sleep(GRACE_PERIOD_DURATION)
-    # If the timer finishes and the system hasn't been disarmed back to SAFE, trigger it
-    if system_state == "GRACE_PERIOD":
-        system_state = "TRIGGERED"
-        await broadcast_state()
-
-@app.get("/")
-async def get_index():
-    with open("index.html", "r") as f:
-        return HTMLResponse(f.read())
-
-@app.post("/api/esp/door-opened")
-async def door_opened(background_tasks: BackgroundTasks):
-    global system_state
-    if system_state == "SAFE":
-        system_state = "GRACE_PERIOD"
-        background_tasks.add_task(grace_period_timer)
-        await broadcast_state()
-    return {"status": "Timer started"}
-
-@app.post("/api/esp/upload-snapshot")
-async def upload_snapshot(file: UploadFile = File(...)):
-    global latest_image_url
+def send_sms_alert():
+    """Triggers the Fast2SMS API to send a text message."""
+    url = "https://www.fast2sms.com/dev/bulkV2"
+    payload = {
+        "route": "q",
+        "message": "⚠️ SECURITY ALERT: Lock Sentinel detected a breach! Check the dashboard.",
+        "language": "english",
+        "flash": 0,
+        "numbers": YOUR_PHONE_NUMBER
+    }
+    headers = {
+        "authorization": FAST2SMS_API_KEY,
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    
     try:
-        # Upload the JPEG to Cloudinary and grab the secure URL
-        result = cloudinary.uploader.upload(file.file)
-        latest_image_url = result.get("secure_url")
-        
-        # Instantly update the web dashboard with the new photo
-        await broadcast_state()
-        return {"status": "uploaded", "url": latest_image_url}
+        response = requests.post(url, data=payload, headers=headers)
+        print("Fast2SMS Response:", response.text)
     except Exception as e:
-        return {"error": str(e)}
+        print("Failed to send SMS:", e)
 
-# --- NEW: Handles the Web Dashboard Disarm Button ---
-@app.post("/api/app/verify")
-async def verify_user():
-    global system_state
-    # Instantly reset the system back to normal
-    system_state = "SAFE"
-    await broadcast_state()
-    return {"status": "System disarmed and reset to SAFE"}
+# ===========================
+# ESP32 HARDWARE ENDPOINTS
+# ===========================
+@app.route('/api/esp/door-opened', methods=['POST'])
+def handle_esp_trigger():
+    global system_status
+    system_status = "BREACH DETECTED"
+    
+    # Send the SMS immediately when the ESP32 pings this route
+    send_sms_alert()
+    
+    return jsonify({"status": "success", "message": "Alert received and SMS sent"}), 200
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    clients.add(websocket)
-    # Send current state and photo to the newly connected user
-    await websocket.send_json({"state": system_state, "image_url": latest_image_url})
-    try:
-        while True:
-            await websocket.receive_text()
-    except Exception:
-        clients.remove(websocket)
+@app.route('/api/esp/upload-snapshot', methods=['POST'])
+def handle_photo_upload():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+        
+    # Save the incoming image, overwriting the old one
+    file.save(PHOTO_PATH)
+    return jsonify({"status": "success", "message": "Photo uploaded"}), 200
+
+# ===========================
+# WEB DASHBOARD ENDPOINTS
+# ===========================
+@app.route('/latest-photo')
+def serve_photo():
+    """Serves the most recently uploaded ESP32 image."""
+    if os.path.exists(PHOTO_PATH):
+        return send_file(PHOTO_PATH, mimetype='image/jpeg')
+    return "No photo uploaded yet.", 404
+
+@app.route('/')
+def dashboard():
+    """A simple auto-refreshing HTML dashboard."""
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Lock Sentinel Dashboard</title>
+        <!-- Auto-refresh the page every 5 seconds -->
+        <meta http-equiv="refresh" content="5">
+        <style>
+            body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background-color: #121212; color: white; }
+            .status { font-size: 28px; font-weight: bold; padding: 20px; border-radius: 10px; display: inline-block; margin-bottom: 20px; }
+            .secure { background-color: #2e7d32; }
+            .breach { background-color: #d32f2f; animation: blinker 1s linear infinite; }
+            @keyframes blinker { 50% { opacity: 0; } }
+            img { max-width: 90%; max-height: 60vh; border: 3px solid #555; border-radius: 10px; margin-top: 20px; }
+        </style>
+    </head>
+    <body>
+        <h1>Lock Sentinel Security System</h1>
+        
+        <div class="status {% if status == 'Secure' %}secure{% else %}breach{% endif %}">
+            System Status: {{ status }}
+        </div>
+        
+        <h3>Latest Camera Snapshot:</h3>
+        <img src="/latest-photo" alt="ESP32-CAM Stream" onerror="this.src=''; this.alt='Waiting for first image upload...';">
+    </body>
+    </html>
+    """
+    return render_template_string(html, status=system_status)
+
+if __name__ == '__main__':
+    # Render binds dynamic ports automatically. This handles it smoothly.
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
