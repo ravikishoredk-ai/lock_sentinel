@@ -1,27 +1,61 @@
 import os
 import requests
-from flask import Flask, request, jsonify, send_file, render_template_string
+import cloudinary
+import cloudinary.uploader
+from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
+from typing import List
 
-app = Flask(__name__)
+app = FastAPI(title="Lock Sentinel Security System")
 
-# ===========================
+# ====================================================
 # FAST2SMS CONFIGURATION
-# ===========================
+# ====================================================
 FAST2SMS_API_KEY = "BMEk1yoSKlcCaWAUtgI248ZsV7ODGJdmQ0Pz3TfFjRYh5q6HNwuAa4FLy20PclYIwkWfzmVG3oN1qseJ"
 YOUR_PHONE_NUMBER = "9363730659"
 
-# ===========================
-# STORAGE SETUP
-# ===========================
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-PHOTO_PATH = os.path.join(UPLOAD_FOLDER, 'esp32_cam.jpg')
+# ====================================================
+# CLOUDINARY CONFIGURATION
+# (Replace with your Cloudinary credentials if not using env vars)
+# ====================================================
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME", "w8jdhijo"),
+    api_key=os.getenv("CLOUDINARY_API_KEY", "439362228187961"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET", "LK0eKy_c13qtBUdfqNRGhP8Q35c")
+)
 
-# Global state to track if the alarm is triggered
-system_status = "Secure"
+# System state and live snapshot holder
+system_state = {"status": "Secure", "latest_image_url": ""}
 
+# ====================================================
+# WEBSOCKET MANAGER FOR LIVE FEED / ALERTS
+# ====================================================
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
+
+manager = ConnectionManager()
+
+# ====================================================
+# FAST2SMS HELPER FUNCTION
+# ====================================================
 def send_sms_alert():
-    """Triggers the Fast2SMS API to send a text message."""
+    """Sends SMS breach alert via Fast2SMS Quick Route."""
     url = "https://www.fast2sms.com/dev/bulkV2"
     payload = {
         "route": "q",
@@ -34,83 +68,131 @@ def send_sms_alert():
         "authorization": FAST2SMS_API_KEY,
         "Content-Type": "application/x-www-form-urlencoded"
     }
-    
     try:
-        response = requests.post(url, data=payload, headers=headers)
+        response = requests.post(url, data=payload, headers=headers, timeout=10)
         print("Fast2SMS Response:", response.text)
     except Exception as e:
         print("Failed to send SMS:", e)
 
-# ===========================
+# ====================================================
 # ESP32 HARDWARE ENDPOINTS
-# ===========================
-@app.route('/api/esp/door-opened', methods=['POST'])
-def handle_esp_trigger():
-    global system_status
-    system_status = "BREACH DETECTED"
+# ====================================================
+@app.post("/api/esp/door-opened")
+async def door_opened_trigger():
+    system_state["status"] = "BREACH DETECTED"
     
-    # Send the SMS immediately when the ESP32 pings this route
+    # 1. Send SMS alert
     send_sms_alert()
     
-    return jsonify({"status": "success", "message": "Alert received and SMS sent"}), 200
-
-@app.route('/api/esp/upload-snapshot', methods=['POST'])
-def handle_photo_upload():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
+    # 2. Broadcast breach event to connected dashboard clients
+    await manager.broadcast({
+        "event": "breach",
+        "status": system_state["status"]
+    })
     
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
-        
-    # Save the incoming image, overwriting the old one
-    file.save(PHOTO_PATH)
-    return jsonify({"status": "success", "message": "Photo uploaded"}), 200
+    return JSONResponse(status_code=200, content={"status": "success", "message": "Alert triggered and SMS sent"})
 
-# ===========================
-# WEB DASHBOARD ENDPOINTS
-# ===========================
-@app.route('/latest-photo')
-def serve_photo():
-    """Serves the most recently uploaded ESP32 image."""
-    if os.path.exists(PHOTO_PATH):
-        return send_file(PHOTO_PATH, mimetype='image/jpeg')
-    return "No photo uploaded yet.", 404
+@app.post("/api/esp/upload-snapshot")
+async def upload_snapshot(file: UploadFile = File(...)):
+    try:
+        # Upload directly to Cloudinary
+        contents = await file.read()
+        upload_result = cloudinary.uploader.upload(
+            contents,
+            folder="lock_sentinel"
+        )
+        image_url = upload_result.get("secure_url", "")
+        system_state["latest_image_url"] = image_url
 
-@app.route('/')
-def dashboard():
-    """A simple auto-refreshing HTML dashboard."""
-    html = """
+        # Broadcast new image to connected dashboard clients
+        await manager.broadcast({
+            "event": "new_snapshot",
+            "image_url": image_url
+        })
+
+        return JSONResponse(status_code=200, content={"status": "success", "url": image_url})
+    except Exception as e:
+        print("Cloudinary upload failed:", e)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/api/esp/reset")
+async def reset_system():
+    system_state["status"] = "Secure"
+    await manager.broadcast({
+        "event": "reset",
+        "status": system_state["status"]
+    })
+    return JSONResponse(status_code=200, content={"status": "success", "message": "System reset to secure"})
+
+# ====================================================
+# WEBSOCKET ENDPOINT
+# ====================================================
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    # Send initial state on connection
+    await websocket.send_json({
+        "event": "init",
+        "status": system_state["status"],
+        "image_url": system_state["latest_image_url"]
+    })
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+# ====================================================
+# HTML WEB DASHBOARD
+# ====================================================
+@app.get("/", response_class=HTMLResponse)
+async def serve_dashboard():
+    html_content = """
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
+        <meta charset="UTF-8">
         <title>Lock Sentinel Dashboard</title>
-        <!-- Auto-refresh the page every 5 seconds -->
-        <meta http-equiv="refresh" content="5">
         <style>
-            body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background-color: #121212; color: white; }
-            .status { font-size: 28px; font-weight: bold; padding: 20px; border-radius: 10px; display: inline-block; margin-bottom: 20px; }
-            .secure { background-color: #2e7d32; }
-            .breach { background-color: #d32f2f; animation: blinker 1s linear infinite; }
-            @keyframes blinker { 50% { opacity: 0; } }
-            img { max-width: 90%; max-height: 60vh; border: 3px solid #555; border-radius: 10px; margin-top: 20px; }
+            body { font-family: Arial, sans-serif; background-color: #121212; color: #fff; text-align: center; padding: 40px; }
+            .badge { font-size: 24px; padding: 15px 30px; border-radius: 8px; display: inline-block; margin-bottom: 25px; font-weight: bold; }
+            .Secure { background-color: #2e7d32; }
+            .BREACH { background-color: #d32f2f; animation: pulse 1s infinite alternate; }
+            @keyframes pulse { from { opacity: 1; } to { opacity: 0.5; } }
+            img { max-width: 80%; max-height: 500px; border: 2px solid #444; border-radius: 8px; margin-top: 20px; }
         </style>
     </head>
     <body>
-        <h1>Lock Sentinel Security System</h1>
-        
-        <div class="status {% if status == 'Secure' %}secure{% else %}breach{% endif %}">
-            System Status: {{ status }}
-        </div>
-        
-        <h3>Latest Camera Snapshot:</h3>
-        <img src="/latest-photo" alt="ESP32-CAM Stream" onerror="this.src=''; this.alt='Waiting for first image upload...';">
+        <h1>Lock Sentinel Security Hub</h1>
+        <div id="statusBadge" class="badge Secure">Status: Secure</div>
+        <br>
+        <img id="cameraView" src="" alt="Awaiting camera snapshot..." onerror="this.style.display='none';">
+
+        <script>
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(protocol + '//' + window.location.host + '/ws');
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                const badge = document.getElementById('statusBadge');
+                const img = document.getElementById('cameraView');
+
+                if (data.status) {
+                    badge.innerText = 'Status: ' + data.status;
+                    badge.className = 'badge ' + (data.status.includes('BREACH') ? 'BREACH' : 'Secure');
+                }
+                if (data.image_url) {
+                    img.src = data.image_url;
+                    img.style.display = 'inline-block';
+                }
+            };
+        </script>
     </body>
     </html>
     """
-    return render_template_string(html, status=system_status)
+    return HTMLResponse(content=html_content)
 
-if __name__ == '__main__':
-    # Render binds dynamic ports automatically. This handles it smoothly.
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 5000))
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
