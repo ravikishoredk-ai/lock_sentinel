@@ -1,7 +1,5 @@
 import os
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import requests
 import cloudinary
 import cloudinary.uploader
 from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
@@ -11,12 +9,11 @@ from typing import List
 app = FastAPI(title="Lock Sentinel Security System")
 
 # ====================================================
-# EMAIL NOTIFICATION CONFIGURATION
+# HTTP EMAIL CONFIGURATION (BREVO API)
 # ====================================================
-# Put your Gmail address and 16-character app password here:
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "xsmtpsib-f1ef3ee4f1e21d10027ec5bdbd6937603ee19c07b58269dd6125ec179b69c27a-8bEiHMkyzFWDZLUF")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "ravikishore.rtl@gmail.com")
-APP_PASSWORD = os.getenv("APP_PASSWORD", "pawz ktrv bzsy nmmp")
-RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL", "ravikishore.rtl@gmail.com") # Can be the same as SENDER_EMAIL
+RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL", "ravikishore.rtl@gmail.com") 
 
 # ====================================================
 # CLOUDINARY CONFIGURATION
@@ -54,22 +51,19 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # ====================================================
-# GMAIL ALERT HELPER FUNCTION
+# HTTP EMAIL ALERT HELPER FUNCTION
 # ====================================================
 def send_email_alert():
-    """Sends an HTML email with dashboard and disarm links."""
+    """Sends an HTML email with dashboard and disarm links via Brevo API."""
     try:
         # Render automatically provides RENDER_EXTERNAL_URL during deployment
         app_url = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:5000")
         disarm_link = f"{app_url}/api/disarm"
         dashboard_link = f"{app_url}/"
 
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = "⚠️ SECURITY ALERT: Lock Sentinel Breach Detected!"
-        msg["From"] = f"Lock Sentinel <{SENDER_EMAIL}>"
-        msg["To"] = RECEIVER_EMAIL
-
-        html = f"""
+        url = "https://api.brevo.com/v3/smtp/email"
+        
+        html_content = f"""
         <html>
           <body style="font-family: Arial, sans-serif; text-align: center; padding: 20px;">
             <h2 style="color: #d32f2f;">⚠️ SECURITY ALERT: Breach Detected!</h2>
@@ -81,18 +75,24 @@ def send_email_alert():
           </body>
         </html>
         """
-        
-        part = MIMEText(html, "html")
-        msg.attach(part)
 
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(SENDER_EMAIL, APP_PASSWORD)
-        server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
-        server.quit()
-        print("Alert email sent successfully!")
+        payload = {
+            "sender": {"name": "Lock Sentinel", "email": SENDER_EMAIL},
+            "to": [{"email": RECEIVER_EMAIL, "name": "System Admin"}],
+            "subject": "⚠️ SECURITY ALERT: Lock Sentinel Breach Detected!",
+            "htmlContent": html_content
+        }
+        
+        headers = {
+            "accept": "application/json",
+            "api-key": BREVO_API_KEY,
+            "content-type": "application/json"
+        }
+
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        print("Email API Response:", response.text)
     except Exception as e:
-        print("Failed to send email:", e)
+        print("Failed to send email API request:", e)
 
 # ====================================================
 # ESP32 HARDWARE ENDPOINTS
@@ -100,15 +100,12 @@ def send_email_alert():
 @app.post("/api/esp/door-opened")
 async def door_opened_trigger():
     system_state["status"] = "BREACH DETECTED"
-    
     send_email_alert()
-    
     await manager.broadcast({
         "event": "breach",
         "status": system_state["status"]
     })
-    
-    return JSONResponse(status_code=200, content={"status": "success", "message": "Email alert sent"})
+    return JSONResponse(status_code=200, content={"status": "success", "message": "Email alert triggered"})
 
 @app.post("/api/esp/upload-snapshot")
 async def upload_snapshot(file: UploadFile = File(...)):
@@ -125,14 +122,13 @@ async def upload_snapshot(file: UploadFile = File(...)):
             "event": "new_snapshot",
             "image_url": image_url
         })
-
         return JSONResponse(status_code=200, content={"status": "success", "url": image_url})
     except Exception as e:
         print("Cloudinary upload failed:", e)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 # ====================================================
-# NEW: ONE-CLICK DISARM ENDPOINT (GET)
+# ONE-CLICK DISARM ENDPOINT (GET)
 # ====================================================
 @app.get("/api/disarm", response_class=HTMLResponse)
 async def disarm_system_via_email():
@@ -142,7 +138,6 @@ async def disarm_system_via_email():
         "status": system_state["status"]
     })
     
-    # This HTML is what you see on your phone when you click the email link
     html_content = """
     <!DOCTYPE html>
     <html>
@@ -155,7 +150,6 @@ async def disarm_system_via_email():
     """
     return HTMLResponse(content=html_content)
 
-# Keep the old POST reset route just in case the ESP32 needs it
 @app.post("/api/esp/reset")
 async def reset_system():
     system_state["status"] = "Secure"
