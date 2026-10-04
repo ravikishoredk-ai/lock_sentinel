@@ -1,92 +1,143 @@
 import os
-import requests
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, render_template_string, request, jsonify
 from flask_cors import CORS
+import requests
 
 app = Flask(__name__)
 CORS(app)
 
-BREVO_API_KEY = os.environ.get("BREVO_API_KEY")
+system_status = "SAFE"
+last_snapshot_url = ""
 
-system_data = {
-    "status": "SAFE",               
-    "snapshot_url": ""              
-}
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lock Sentinel Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #0f172a; color: #f8fafc; text-align: center; padding: 20px; }
+        .card { background: #1e293b; max-width: 500px; margin: 0 auto; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        .status { font-size: 24px; font-weight: bold; padding: 15px; border-radius: 8px; margin: 20px 0; }
+        .SAFE { background: #22c55e; color: white; }
+        .WARNING { background: #eab308; color: black; }
+        .ALARM { background: #ef4444; color: white; }
+        button { background: #3b82f6; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 6px; cursor: pointer; margin-top: 10px; }
+        button:hover { background: #2563eb; }
+        .btn-disarm { background: #10b981; }
+        .btn-disarm:hover { background: #059669; }
+        img { max-width: 100%; border-radius: 6px; margin-top: 15px; border: 2px solid #475569; }
+    </style>
+    <script>
+        setInterval(() => {
+            fetch('/api/status')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('status-badge').innerText = "STATUS: " + data.status;
+                    document.getElementById('status-badge').className = "status " + data.status;
+                    if(data.snapshot_url) {
+                        document.getElementById('snapshot-img').src = data.snapshot_url;
+                        document.getElementById('snapshot-img').style.display = "block";
+                    }
+                });
+        }, 3000);
 
-def send_email_alert(subject, html_content):
-    if not BREVO_API_KEY:
-        print("Warning: BREVO_API_KEY is not set. Email not sent.")
+        function disarmSystem() {
+            fetch('/api/disarm', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => { alert("System Disarmed!"); location.reload(); });
+        }
+    </script>
+</head>
+<body>
+    <div class="card">
+        <h2>Lock Sentinel Security</h2>
+        <div id="status-badge" class="status {{ status }}">{{ status }}</div>
+        <p>Real-time ESP32-CAM monitoring active.</p>
+        
+        <div>
+            <img id="snapshot-img" src="{{ snapshot_url }}" alt="Incident Snapshot" style="display: {{ 'block' if snapshot_url else 'none' }};">
+        </div>
+        
+        <br>
+        <button class="btn-disarm" onclick="disarmSystem()">Disarm Alarm</button>
+    </div>
+</body>
+</html>
+"""
+
+def send_brevo_email(subject, message_content, snapshot_url=""):
+    api_key = os.environ.get("BREVO_API_KEY")
+    if not api_key:
+        print("[EMAIL ERROR] BREVO_API_KEY environment variable not set.")
         return
         
     url = "https://api.brevo.com/v3/smtp/email"
-    headers = {
-        "accept": "application/json",
-        "api-key": BREVO_API_KEY,
-        "content-type": "application/json"
-    }
+    html_content = f"<p>{message_content}</p>"
+    if snapshot_url:
+        html_content += f'<br><a href="{snapshot_url}" target="_blank"><button style="background:#3b82f6;color:white;padding:10px 15px;border:none;border-radius:5px;cursor:pointer;">View Incident Photo from ESP32</button></a>'
+
     payload = {
-        "sender": {"email": "alert@sentinel.com", "name": "Sentinel Security"},
-        "to": [{"email": "ravikishore.rtl@gmail.com", "name": "Admin"}], # CHANGE THIS
+        "sender": {"name": "Lock Sentinel", "email": "ravikishore.rtl@gmail.com"},
+        "to": [{"email": "ravikishore.rtl@gmail.com"}],
         "subject": subject,
         "htmlContent": html_content
     }
-    
+    headers = {
+        "accept": "application/json",
+        "api-key": api_key,
+        "content-type": "application/json"
+    }
     try:
-        requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        print("Brevo API Response:", response.status_code, response.text)
     except Exception as e:
-        print(f"Failed to send email: {e}")
+        print("[EMAIL ERROR] Failed to send email via Brevo:", e)
 
-@app.route("/")
+@app.route('/')
 def index():
-    return render_template("index.html")
+    return render_template_string(HTML_TEMPLATE, status=system_status, snapshot_url=last_snapshot_url)
 
-@app.route("/api/esp/grace-period", methods=["POST"])
-def grace_period():
-    body = request.get_json(silent=True) or {}
-    system_data["status"] = "GRACE_PERIOD"
-    
-    if "snapshot_url" in body and body["snapshot_url"]:
-        system_data["snapshot_url"] = body["snapshot_url"]
-        
-    send_email_alert(
-        "Security Alert: Grace Period Started", 
-        f"<p>The door was opened. The 55-second disarm grace period has started.</p><p>Snapshot available on local network: <a href='{system_data['snapshot_url']}'>View Photo</a></p>"
-    )
-        
-    return jsonify({"success": True, "status": system_data["status"]}), 200
-
-@app.route("/api/esp/door-opened", methods=["POST"])
-def door_opened():
-    body = request.get_json(silent=True) or {}
-    system_data["status"] = "TRIGGERED"
-    
-    if "snapshot_url" in body and body["snapshot_url"]:
-        system_data["snapshot_url"] = body["snapshot_url"]
-        
-    send_email_alert(
-        "CRITICAL: System Triggered!", 
-        f"<p>The alarm has been triggered!</p><p>Snapshot available on local network: <a href='{system_data['snapshot_url']}'>View Photo</a></p>"
-    )
-        
-    return jsonify({"success": True, "status": system_data["status"]}), 200
-
-@app.route("/api/esp/status", methods=["GET"])
+@app.route('/api/status', methods=['GET'])
 def get_status():
-    return jsonify({
-        "status": system_data["status"],
-        "snapshot_url": system_data["snapshot_url"]
-    }), 200
+    return jsonify({"status": system_status, "snapshot_url": last_snapshot_url})
 
-@app.route("/api/esp/reset", methods=["POST"])
-def reset_system():
-    system_data["status"] = "SAFE"
-    return jsonify({"success": True, "status": "SAFE"}), 200
+@app.route('/api/esp/grace-period', methods=['POST'])
+def esp_grace_period():
+    global system_status, last_snapshot_url
+    system_status = "WARNING"
+    data = request.get_json(silent=True) or {}
+    last_snapshot_url = data.get("snapshot_url", "")
+    send_brevo_email("⚠️ WARNING: Entry Grace Period Started", "Door opened or motion detected. 55-second entry grace period initiated.", last_snapshot_url)
+    return jsonify({"status": "received"}), 200
 
-@app.route("/api/disarm", methods=["POST"])
-def disarm_dashboard():
-    system_data["status"] = "SAFE"
-    return jsonify({"success": True, "status": "SAFE"}), 200
+@app.route('/api/esp/door-opened', methods=['POST'])
+def esp_door_opened():
+    global system_status, last_snapshot_url
+    system_status = "ALARM"
+    data = request.get_json(silent=True) or {}
+    last_snapshot_url = data.get("snapshot_url", "")
+    send_brevo_email("🚨 CRITICAL ALERT: Alarm Triggered!", "The entry grace period expired or tamper detected. Full alarm active!", last_snapshot_url)
+    return jsonify({"status": "received"}), 200
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+@app.route('/api/esp/status', methods=['GET'])
+def esp_poll_status():
+    return jsonify({"status": system_status})
+
+@app.route('/api/esp/reset', methods=['POST'])
+def esp_reset():
+    global system_status, last_snapshot_url
+    system_status = "SAFE"
+    last_snapshot_url = ""
+    return jsonify({"status": "reset_acknowledged"}), 200
+
+@app.route('/api/disarm', methods=['POST'])
+def manual_disarm():
+    global system_status, last_snapshot_url
+    system_status = "SAFE"
+    last_snapshot_url = ""
+    return jsonify({"status": "disarmed"}), 200
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
