@@ -4,224 +4,86 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lock Sentinel Dashboard</title>
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="mobile-web-app-capable" content="yes">
     <style>
-        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background-color: #0f172a; color: #f8fafc; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
-        .card { background: #1e293b; border-radius: 16px; padding: 24px; width: 100%; max-width: 420px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5); text-align: center; border: 1px solid #334155; }
-        h1 { font-size: 22px; margin-bottom: 8px; color: #94a3b8; letter-spacing: 1px; }
-        
-        .status-badge { display: inline-block; padding: 10px 20px; border-radius: 50px; font-weight: bold; font-size: 18px; margin: 15px 0; }
-        .bg-idle { background: #065f46; color: #34d399; }
-        .bg-pending { background: #9a3412; color: #fb923c; }
-        .bg-alarm { background: #881337; color: #f43f5e; animation: pulse 1s infinite; }
-
-        @keyframes pulse {
-            0% { transform: scale(1); }
-            50% { transform: scale(1.05); }
-            100% { transform: scale(1); }
-        }
-
-        .timer { font-size: 52px; font-weight: 800; color: #f97316; margin: 10px 0; }
-        
-        .cam-grid { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 20px; }
-        .cam-box { background: #0f172a; border-radius: 8px; padding: 6px; border: 1px solid #334155; }
-        .cam-box img { width: 100%; height: auto; object-fit: cover; border-radius: 6px; }
-        .cam-label { font-size: 14px; color: #64748b; margin-top: 4px; font-weight: bold;}
-
-        .btn { width: 100%; padding: 16px; border: none; border-radius: 12px; font-size: 18px; font-weight: bold; cursor: pointer; transition: 0.2s; margin-top: 20px; }
-        .btn-auth { background: #2563eb; color: white; }
-        .btn-auth:active { background: #1d4ed8; }
-        .hidden { display: none !important; }
-        
-        .control-btn { background: transparent; border: 1px solid #475569; color: #94a3b8; padding: 8px 12px; border-radius: 8px; font-size: 12px; margin-bottom: 10px; cursor: pointer; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f9; display: flex; flex-direction: column; align-items: center; padding: 40px 20px; margin: 0; font-size: 18px; }
+        .card { background: white; padding: 40px 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); text-align: center; max-width: 550px; width: 100%; }
+        h1 { margin-top: 0; color: #333; font-size: 2em; }
+        #status-indicator { display: inline-block; padding: 15px 25px; border-radius: 30px; font-weight: bold; font-size: 1.3em; margin: 20px 0; color: white; transition: background-color 0.3s; }
+        .safe { background-color: #10b981; }
+        .grace { background-color: #f59e0b; }
+        .triggered { background-color: #ef4444; }
+        #countdown-timer { font-size: 3em; font-weight: bold; color: #f59e0b; margin: 15px 0; display: none; font-variant-numeric: tabular-nums; }
+        img { max-width: 100%; border-radius: 8px; margin-top: 20px; display: none; border: 3px solid #ef4444; }
+        button { background-color: #3b82f6; color: white; border: none; padding: 15px 24px; border-radius: 8px; font-size: 1.2em; cursor: pointer; font-weight: bold; width: 100%; margin-top: 25px; transition: background-color 0.2s; }
+        button:hover { background-color: #2563eb; }
     </style>
 </head>
 <body>
-
     <div class="card">
-        <h1>LOCK SENTINEL</h1>
-        
-        <button id="btnSoundTest" class="control-btn" onclick="testAudioUnlock()">🔊 Tap to Enable Alarm Sound</button>
-        
-        <div id="statusBadge" class="status-badge bg-idle">🛡️ ARMED</div>
-        
-        <div id="countdownBox" class="hidden">
-            <div style="color: #94a3b8; font-size: 13px; letter-spacing: 0.5px;">GRACE WINDOW EXPIRING IN</div>
-            <div id="timerText" class="timer">55</div>
-        </div>
-
-        <button id="btnAuth" class="btn btn-auth hidden" onclick="authenticateUser()">AUTHENTICATE & DISARM</button>
-
-        <div id="camSection" class="cam-grid hidden">
-            <div class="cam-box">
-                <img id="imgDoor" src="" alt="Door Camera">
-                <div class="cam-label">Door Camera Snapshot</div>
-            </div>
-        </div>
+        <h1>Lock Sentinel Status</h1>
+        <div id="status-indicator" class="safe">SAFE - MONITORING</div>
+        <div id="countdown-timer">55</div>
+        <img id="snapshot" src="" alt="Intruder Snapshot">
+        <button onclick="disarmSystem()">DISARM SYSTEM</button>
     </div>
 
     <script>
-        let audioCtx = null;
-        let sirenInterval = null;
-        let countdownInterval = null;
-        let currentSeconds = 55;
+        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+        const statusEl = document.getElementById('status-indicator');
+        const timerEl = document.getElementById('countdown-timer');
+        const imgEl = document.getElementById('snapshot');
+        
+        let graceInterval;
 
-        // Audio System
-        function initAudioContext() {
-            if (!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            if (audioCtx.state === 'suspended') {
-                audioCtx.resume();
-            }
-        }
-
-        function testAudioUnlock() {
-            initAudioContext();
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
-            osc.type = 'sine';
-            osc.frequency.value = 800;
-            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
-            osc.connect(gain);
-            gain.connect(audioCtx.destination);
-            osc.start();
-            osc.stop(audioCtx.currentTime + 0.2);
-
-            const btn = document.getElementById('btnSoundTest');
-            btn.innerText = '✅ Alarm Audio Ready';
-            btn.style.color = '#34d399';
-            btn.style.borderColor = '#059669';
-        }
-
-        function playSirenSound() {
-            if (sirenInterval) return;
-            initAudioContext();
-
-            let isHighTone = false;
-            sirenInterval = setInterval(() => {
-                if (audioCtx.state === 'suspended') {
-                    audioCtx.resume();
-                }
-
-                const osc = audioCtx.createOscillator();
-                const gain = audioCtx.createGain();
-
-                osc.type = 'sawtooth';
-                osc.frequency.value = isHighTone ? 800 : 600;
-                isHighTone = !isHighTone;
-
-                gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.35);
-
-                osc.connect(gain);
-                gain.connect(audioCtx.destination);
-
-                osc.start();
-                osc.stop(audioCtx.currentTime + 0.35);
-            }, 400);
-        }
-
-        function stopSirenSound() {
-            if (sirenInterval) {
-                clearInterval(sirenInterval);
-                sirenInterval = null;
-            }
-        }
-
-        // Ticking Countdown Logic
-        function startCountdown() {
-            if (countdownInterval) clearInterval(countdownInterval);
-            currentSeconds = 55;
-            document.getElementById('timerText').innerText = currentSeconds;
+        function startStopwatch() {
+            clearInterval(graceInterval);
+            let timeLeft = 55;
+            timerEl.style.display = "block";
+            timerEl.textContent = timeLeft;
             
-            countdownInterval = setInterval(() => {
-                currentSeconds--;
-                if (currentSeconds >= 0) {
-                    document.getElementById('timerText').innerText = currentSeconds;
-                } else {
-                    clearInterval(countdownInterval);
+            graceInterval = setInterval(() => {
+                timeLeft--;
+                timerEl.textContent = timeLeft;
+                if (timeLeft <= 0) {
+                    clearInterval(graceInterval);
                 }
             }, 1000);
         }
 
-        function stopCountdown() {
-            if (countdownInterval) clearInterval(countdownInterval);
-            document.getElementById('timerText').innerText = "55";
+        function stopStopwatch() {
+            clearInterval(graceInterval);
+            timerEl.style.display = "none";
         }
 
-        // WebSocket Connection
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-        let socket;
-
-        function connectWebSocket() {
-            socket = new WebSocket(wsUrl);
-
-            socket.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                updateUI(data);
-            };
-
-            socket.onclose = () => {
-                setTimeout(connectWebSocket, 2000);
-            };
-        }
-
-        // UI State Updates
-        function updateUI(data) {
-            const badge = document.getElementById('statusBadge');
-            const countdownBox = document.getElementById('countdownBox');
-            const btnAuth = document.getElementById('btnAuth');
-            const camSection = document.getElementById('camSection');
-
-            if (data.state === 'SAFE') {
-                stopSirenSound();
-                stopCountdown();
-                badge.className = 'status-badge bg-idle';
-                badge.innerText = '🛡️ ARMED';
-                countdownBox.classList.add('hidden');
-                btnAuth.classList.add('hidden');
-                camSection.classList.add('hidden');
-            } 
-            else if (data.state === 'GRACE_PERIOD') {
-                stopSirenSound();
-                badge.className = 'status-badge bg-pending';
-                badge.innerText = '⚠️ BREACH DETECTED';
-                countdownBox.classList.remove('hidden');
-                btnAuth.classList.remove('hidden');
-                camSection.classList.add('hidden');
-                
-                // Start the visual 55-second countdown only if it isn't running
-                if (!countdownInterval) {
-                    startCountdown();
-                }
-            } 
-            else if (data.state === 'TRIGGERED') {
-                playSirenSound();
-                stopCountdown(); // Stop the visual timer since we are fully triggered
-                badge.className = 'status-badge bg-alarm';
-                badge.innerText = '🚨 INTRUSION ALARM!';
-                countdownBox.classList.add('hidden');
-                btnAuth.classList.add('hidden');
-                camSection.classList.remove('hidden');
-
-                // Load the Cloudinary image URL from the Python backend
-                if (data.image_url) {
-                    document.getElementById('imgDoor').src = data.image_url + "?t=" + new Date().getTime();
-                }
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            
+            if (data.state === "SAFE") {
+                statusEl.className = "safe";
+                statusEl.textContent = "SAFE - MONITORING";
+                stopStopwatch();
+            } else if (data.state === "GRACE_PERIOD") {
+                statusEl.className = "grace";
+                statusEl.textContent = "⚠️ GRACE PERIOD ACTIVE";
+                startStopwatch(); 
+            } else if (data.state === "TRIGGERED") {
+                statusEl.className = "triggered";
+                statusEl.textContent = "🚨 ALARM TRIGGERED";
+                stopStopwatch();
             }
-        }
 
-        // Disarm Button (You will need an endpoint for this in server.py later!)
-        function authenticateUser() {
-            initAudioContext();
+            if (data.image_url) {
+                imgEl.src = data.image_url;
+                imgEl.style.display = "block";
+            } else {
+                imgEl.style.display = "none";
+            }
+        };
+
+        function disarmSystem() {
             fetch('/api/app/verify', { method: 'POST' });
         }
-
-        connectWebSocket();
     </script>
 </body>
 </html>
