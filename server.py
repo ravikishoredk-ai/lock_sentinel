@@ -10,14 +10,14 @@ app = FastAPI(title="Lock Sentinel Security System")
 
 system_state = {"state": "SAFE", "image_url": ""}
 
-BREVO_API_KEY = os.getenv("BREVO_API_KEY", "YOUR_BREVO_API_KEY")
-SENDER_EMAIL = os.getenv("SENDER_EMAIL", "YOUR_VERIFIED_SENDER_EMAIL")
-RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL", "YOUR_RECEIVER_EMAIL")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "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")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "ravikishore.rtl@gmail.com")
+RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL", "ravikishore.rtl@gmail.com")
 
 cloudinary.config(
-  cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "YOUR_CLOUD_NAME"),
-  api_key = os.getenv("CLOUDINARY_API_KEY", "YOUR_API_KEY"),
-  api_secret = os.getenv("CLOUDINARY_API_SECRET", "YOUR_API_SECRET")
+  cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "w8jdhijo"),
+  api_key = os.getenv("CLOUDINARY_API_KEY", "439362228187961"),
+  api_secret = os.getenv("CLOUDINARY_API_SECRET", "LK0eKy_c13qtBUdfqNRGhP8Q35c")
 )
 
 class ConnectionManager:
