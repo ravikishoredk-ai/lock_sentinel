@@ -83,8 +83,8 @@ def send_brevo_email(subject, message_content, snapshot_url=""):
     html_content += f'<a href="{disarm_link}" target="_blank"><button style="background:#10b981;color:white;padding:10px 15px;border:none;border-radius:5px;cursor:pointer;">Disarm Alarm Now</button></a>'
 
     payload = {
-        "sender": {"name": "Lock Sentinel", "email": "YOUR_VERIFIED_BREVO_EMAIL@gmail.com"},
-        "to": [{"email": "YOUR_RECEIVER_EMAIL@gmail.com"}],
+        "sender": {"name": "Lock Sentinel", "email": "ravikishore.rtl@gmail.com"},
+        "to": [{"email": "ravikishore.rtl@gmail.com"}],
         "subject": subject,
         "htmlContent": html_content
     }
