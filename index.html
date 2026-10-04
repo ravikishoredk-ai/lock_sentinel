@@ -1,89 +1,108 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lock Sentinel Dashboard</title>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f9; display: flex; flex-direction: column; align-items: center; padding: 40px 20px; margin: 0; font-size: 18px; }
-        .card { background: white; padding: 40px 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); text-align: center; max-width: 550px; width: 100%; }
-        h1 { margin-top: 0; color: #333; font-size: 2em; }
-        #status-indicator { display: inline-block; padding: 15px 25px; border-radius: 30px; font-weight: bold; font-size: 1.3em; margin: 20px 0; color: white; transition: background-color 0.3s; }
-        .safe { background-color: #10b981; }
-        .grace { background-color: #f59e0b; }
-        .triggered { background-color: #ef4444; }
-        #countdown-timer { font-size: 3em; font-weight: bold; color: #f59e0b; margin: 15px 0; display: none; font-variant-numeric: tabular-nums; }
-        img { max-width: 100%; border-radius: 8px; margin-top: 20px; display: none; border: 3px solid #ef4444; }
-        button { background-color: #3b82f6; color: white; border: none; padding: 15px 24px; border-radius: 8px; font-size: 1.2em; cursor: pointer; font-weight: bold; width: 100%; margin-top: 25px; transition: background-color 0.2s; }
-        button:hover { background-color: #2563eb; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sentinel Security Hub</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: #0f172a; color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+    .card { background-color: #1e293b; width: 100%; max-width: 480px; border-radius: 16px; padding: 28px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); text-align: center; }
+    h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 20px; }
+    .badge { display: inline-block; padding: 8px 18px; border-radius: 9999px; font-weight: 700; font-size: 0.9rem; margin-bottom: 24px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .status-safe { background-color: #065f46; color: #34d399; }
+    .status-grace { background-color: #854d0e; color: #fde047; }
+    .status-triggered { background-color: #991b1b; color: #f87171; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+    .btn-group { display: flex; flex-direction: column; gap: 12px; }
+    button { width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: all 0.2s ease; }
+    .btn-disarm { background-color: #3b82f6; color: white; }
+    .btn-disarm:hover { background-color: #2563eb; }
+    .btn-view { background-color: #334155; color: #e2e8f0; }
+    .btn-view:hover { background-color: #475569; }
+    .snapshot-box { margin-top: 24px; display: none; background: #0b1120; padding: 12px; border-radius: 12px; }
+    .snapshot-box img { width: 100%; border-radius: 8px; max-height: 280px; object-fit: cover; }
+    .snapshot-caption { margin-top: 8px; font-size: 0.8rem; color: #94a3b8; }
+  </style>
 </head>
 <body>
-    <div class="card">
-        <h1>Lock Sentinel Status</h1>
-        <div id="status-indicator" class="safe">SAFE - MONITORING</div>
-        <div id="countdown-timer">55</div>
-        <img id="snapshot" src="" alt="Intruder Snapshot">
-        <button onclick="disarmSystem()">DISARM SYSTEM</button>
+
+  <div class="card">
+    <h1>Sentinel Control</h1>
+    <div id="statusBadge" class="badge status-safe">STATUS: SAFE</div>
+
+    <div class="btn-group">
+      <button class="btn-disarm" onclick="disarmSystem()">Disarm Alarm</button>
+      <button id="viewBtn" class="btn-view" onclick="toggleSnapshot()">View Incident Photo</button>
     </div>
 
-    <script>
-        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
-        const statusEl = document.getElementById('status-indicator');
-        const timerEl = document.getElementById('countdown-timer');
-        const imgEl = document.getElementById('snapshot');
+    <div id="snapshotBox" class="snapshot-box">
+      <img id="snapshotImg" src="" alt="Security Snapshot">
+      <div id="snapshotMeta" class="snapshot-caption">Snapshot served directly from ESP32 Local IP</div>
+    </div>
+  </div>
+
+  <script>
+    let currentSnapshotUrl = "";
+
+    async function pollStatus() {
+      try {
+        const res = await fetch("/api/esp/status");
+        const data = await res.json();
         
-        let graceInterval;
+        const badge = document.getElementById("statusBadge");
+        badge.className = "badge ";
 
-        function startStopwatch() {
-            clearInterval(graceInterval);
-            let timeLeft = 55;
-            timerEl.style.display = "block";
-            timerEl.textContent = timeLeft;
-            
-            graceInterval = setInterval(() => {
-                timeLeft--;
-                timerEl.textContent = timeLeft;
-                if (timeLeft <= 0) {
-                    clearInterval(graceInterval);
-                }
-            }, 1000);
+        if (data.status === "SAFE") {
+          badge.classList.add("status-safe");
+          badge.innerText = "STATUS: SAFE";
+        } else if (data.status === "GRACE_PERIOD") {
+          badge.classList.add("status-grace");
+          badge.innerText = "ENTRY GRACE PERIOD (55s)";
+        } else if (data.status === "TRIGGERED") {
+          badge.classList.add("status-triggered");
+          badge.innerText = "ALARM TRIGGERED";
         }
 
-        function stopStopwatch() {
-            clearInterval(graceInterval);
-            timerEl.style.display = "none";
+        if (data.snapshot_url) {
+          currentSnapshotUrl = data.snapshot_url;
         }
+      } catch (err) {
+        console.error("Status sync failed", err);
+      }
+    }
 
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            
-            if (data.state === "SAFE") {
-                statusEl.className = "safe";
-                statusEl.textContent = "SAFE - MONITORING";
-                stopStopwatch();
-            } else if (data.state === "GRACE_PERIOD") {
-                statusEl.className = "grace";
-                statusEl.textContent = "⚠️ GRACE PERIOD ACTIVE";
-                startStopwatch(); 
-            } else if (data.state === "TRIGGERED") {
-                statusEl.className = "triggered";
-                statusEl.textContent = "🚨 ALARM TRIGGERED";
-                stopStopwatch();
-            }
+    async function disarmSystem() {
+      try {
+        await fetch("/api/disarm", { method: "POST" });
+        pollStatus();
+      } catch (err) {
+        console.error("Disarm request failed", err);
+      }
+    }
 
-            if (data.image_url) {
-                imgEl.src = data.image_url;
-                imgEl.style.display = "block";
-            } else {
-                imgEl.style.display = "none";
-            }
-        };
+    function toggleSnapshot() {
+      const box = document.getElementById("snapshotBox");
+      const img = document.getElementById("snapshotImg");
 
-        function disarmSystem() {
-            fetch('/api/app/verify', { method: 'POST' });
-        }
-    </script>
+      if (box.style.display === "block") {
+        box.style.display = "none";
+        return;
+      }
+
+      if (!currentSnapshotUrl) {
+        alert("No snapshot registered yet. Waiting for ESP32 connection or trigger event.");
+        return;
+      }
+
+      // Append timestamp to bypass caching so it always loads the newest photo
+      img.src = currentSnapshotUrl + "?t=" + new Date().getTime();
+      box.style.display = "block";
+    }
+
+    // Ping the Render server every 2 seconds for status and IP updates
+    setInterval(pollStatus, 2000);
+    pollStatus();
+  </script>
 </body>
 </html>
