@@ -75,12 +75,16 @@ def send_brevo_email(subject, message_content, snapshot_url=""):
         
     url = "https://api.brevo.com/v3/smtp/email"
     html_content = f"<p>{message_content}</p>"
+    
     if snapshot_url:
-        html_content += f'<br><a href="{snapshot_url}" target="_blank"><button style="background:#3b82f6;color:white;padding:10px 15px;border:none;border-radius:5px;cursor:pointer;">View Incident Photo from ESP32</button></a>'
+        html_content += f'<br><a href="{snapshot_url}" target="_blank"><button style="background:#3b82f6;color:white;padding:10px 15px;border:none;border-radius:5px;cursor:pointer;margin-right:10px;">View Incident Photo from ESP32</button></a>'
+    
+    disarm_link = "https://lock-sentinel.onrender.com/api/disarm"
+    html_content += f'<a href="{disarm_link}" target="_blank"><button style="background:#10b981;color:white;padding:10px 15px;border:none;border-radius:5px;cursor:pointer;">Disarm Alarm Now</button></a>'
 
     payload = {
-        "sender": {"name": "Lock Sentinel", "email": "ravikishore.rtl@gmail.com"},
-        "to": [{"email": "ravikishore.rtl@gmail.com"}],
+        "sender": {"name": "Lock Sentinel", "email": "YOUR_VERIFIED_BREVO_EMAIL@gmail.com"},
+        "to": [{"email": "YOUR_RECEIVER_EMAIL@gmail.com"}],
         "subject": subject,
         "htmlContent": html_content
     }
@@ -132,11 +136,13 @@ def esp_reset():
     last_snapshot_url = ""
     return jsonify({"status": "reset_acknowledged"}), 200
 
-@app.route('/api/disarm', methods=['POST'])
+@app.route('/api/disarm', methods=['POST', 'GET'])
 def manual_disarm():
     global system_status, last_snapshot_url
     system_status = "SAFE"
     last_snapshot_url = ""
+    if request.method == 'GET':
+        return "<h3>System successfully disarmed via email link! You can close this tab.</h3>"
     return jsonify({"status": "disarmed"}), 200
 
 if __name__ == '__main__':
