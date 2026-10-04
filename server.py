@@ -1,166 +1,53 @@
 import os
-import requests
-import cloudinary
-import cloudinary.uploader
-from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
-import asyncio
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
 
-app = FastAPI(title="Lock Sentinel Security System")
+app = Flask(__name__)
+CORS(app)
 
-system_state = {"state": "SAFE", "image_url": ""}
+# Stores the system state and the local IP of the camera
+system_data = {
+    "status": "SAFE",               
+    "snapshot_url": ""              
+}
 
-BREVO_API_KEY = os.getenv("BREVO_API_KEY", "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")
-SENDER_EMAIL = os.getenv("SENDER_EMAIL", "ravikishore.rtl@gmail.com")
-RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL", "ravikishore.rtl@gmail.com")
+@app.route("/")
+def index():
+    return render_template("index.html")
 
-cloudinary.config(
-  cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "w8jdhijo"),
-  api_key = os.getenv("CLOUDINARY_API_KEY", "439362228187961"),
-  api_secret = os.getenv("CLOUDINARY_API_SECRET", "LK0eKy_c13qtBUdfqNRGhP8Q35c")
-)
+@app.route("/api/esp/grace-period", methods=["POST"])
+def grace_period():
+    body = request.get_json(silent=True) or {}
+    system_data["status"] = "GRACE_PERIOD"
+    if "snapshot_url" in body and body["snapshot_url"]:
+        system_data["snapshot_url"] = body["snapshot_url"]
+    return jsonify({"success": True, "status": system_data["status"]}), 200
 
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: list[WebSocket] = []
+@app.route("/api/esp/door-opened", methods=["POST"])
+def door_opened():
+    body = request.get_json(silent=True) or {}
+    system_data["status"] = "TRIGGERED"
+    if "snapshot_url" in body and body["snapshot_url"]:
+        system_data["snapshot_url"] = body["snapshot_url"]
+    return jsonify({"success": True, "status": system_data["status"]}), 200
 
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        await websocket.send_json(system_state)
+@app.route("/api/esp/status", methods=["GET"])
+def get_status():
+    return jsonify({
+        "status": system_data["status"],
+        "snapshot_url": system_data["snapshot_url"]
+    }), 200
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+@app.route("/api/esp/reset", methods=["POST"])
+def reset_system():
+    system_data["status"] = "SAFE"
+    return jsonify({"success": True, "status": "SAFE"}), 200
 
-    async def broadcast(self, message: dict):
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-            except:
-                pass
+@app.route("/api/disarm", methods=["POST"])
+def disarm_dashboard():
+    system_data["status"] = "SAFE"
+    return jsonify({"success": True, "status": "SAFE"}), 200
 
-manager = ConnectionManager()
-
-def send_grace_email_alert():
-    try:
-        app_url = os.getenv("RENDER_EXTERNAL_URL", "https://lock-sentinel.onrender.com")
-        disarm_link = f"{app_url}/api/disarm"
-        url = "https://api.brevo.com/v3/smtp/email"
-        
-        html_content = f"""
-        <html>
-          <body style="font-family: Arial, sans-serif; text-align: center; padding: 20px;">
-            <h2 style="color: #f57c00;">⚠️ Notice: Door Opened</h2>
-            <p>The 55-second entry grace period has started.</p>
-            <p>Would you like to DISARM the system before the alarm triggers?</p>
-            <br>
-            <a href="{disarm_link}" style="padding: 14px 28px; background-color: #388e3c; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; font-size: 18px;">DISARM NOW</a>
-          </body>
-        </html>
-        """
-        payload = {
-            "sender": {"name": "Lock Sentinel", "email": SENDER_EMAIL},
-            "to": [{"email": RECEIVER_EMAIL, "name": "System Admin"}],
-            "subject": "⚠️ Notice: Door Opened (Grace Period Active)",
-            "htmlContent": html_content
-        }
-        headers = {"accept": "application/json", "api-key": BREVO_API_KEY, "content-type": "application/json"}
-        requests.post(url, json=payload, headers=headers, timeout=10)
-    except Exception as e:
-        print("Grace email error:", e)
-
-def send_email_alert():
-    try:
-        app_url = os.getenv("RENDER_EXTERNAL_URL", "https://lock-sentinel.onrender.com")
-        disarm_link = f"{app_url}/api/disarm"
-        url = "https://api.brevo.com/v3/smtp/email"
-        
-        html_content = f"""
-        <html>
-          <body style="font-family: Arial, sans-serif; text-align: center; padding: 20px;">
-            <h2 style="color: #d32f2f;">🚨 ALARM TRIGGERED: Breach Detected!</h2>
-            <p>The 55-second grace period expired without authorization.</p>
-            <p><a href="{app_url}/" style="color: #1976d2; font-weight: bold; font-size: 16px;">View Live Dashboard & Camera</a></p>
-            <br>
-            <a href="{disarm_link}" style="padding: 14px 28px; background-color: #388e3c; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; font-size: 18px;">SILENCE ALARM & DISARM</a>
-          </body>
-        </html>
-        """
-        payload = {
-            "sender": {"name": "Lock Sentinel", "email": SENDER_EMAIL},
-            "to": [{"email": RECEIVER_EMAIL, "name": "System Admin"}],
-            "subject": "🚨 SECURITY ALERT: Lock Sentinel Alarm Triggered!",
-            "htmlContent": html_content
-        }
-        headers = {"accept": "application/json", "api-key": BREVO_API_KEY, "content-type": "application/json"}
-        requests.post(url, json=payload, headers=headers, timeout=10)
-    except Exception as e:
-        print("Email error:", e)
-
-@app.post("/api/esp/grace-period")
-async def trigger_grace_period():
-    system_state["state"] = "GRACE_PERIOD"
-    send_grace_email_alert()
-    await manager.broadcast(system_state)
-    return JSONResponse(status_code=200, content={"status": "success"})
-
-@app.post("/api/esp/door-opened")
-async def door_opened_trigger():
-    system_state["state"] = "TRIGGERED"
-    send_email_alert()
-    await manager.broadcast(system_state)
-    return JSONResponse(status_code=200, content={"status": "success"})
-
-@app.post("/api/esp/upload-snapshot")
-async def upload_snapshot(file: UploadFile = File(...)):
-    try:
-        result = cloudinary.uploader.upload(file.file)
-        system_state["image_url"] = result.get("secure_url")
-        await manager.broadcast(system_state)
-        return JSONResponse(status_code=200, content={"status": "success"})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-@app.get("/api/esp/status")
-async def check_status():
-    return JSONResponse(status_code=200, content={"state": system_state["state"]})
-
-@app.post("/api/app/verify")
-async def disarm_from_dashboard():
-    system_state["state"] = "SAFE"
-    system_state["image_url"] = ""
-    await manager.broadcast(system_state)
-    return JSONResponse(status_code=200, content={"status": "success"})
-
-@app.get("/api/disarm", response_class=HTMLResponse)
-async def disarm_from_email():
-    system_state["state"] = "SAFE"
-    system_state["image_url"] = ""
-    await manager.broadcast(system_state)
-    return HTMLResponse(content="""
-    <html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
-        <h1 style="color: #059669; font-size: 2.5em;">System Disarmed</h1>
-        <p style="font-size: 1.2em;">Dashboard reset to SAFE mode. The physical alarm will silence shortly.</p>
-        <a href="/" style="font-size: 1.2em; color: #3b82f6;">Return to Dashboard</a>
-    </body></html>
-    """)
-
-@app.post("/api/esp/reset")
-async def reset_system():
-    system_state["state"] = "SAFE"
-    system_state["image_url"] = ""
-    await manager.broadcast(system_state)
-    return JSONResponse(status_code=200, content={"status": "success"})
-
-@app.get("/")
-async def serve_dashboard():
-    return FileResponse("index.html")
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
