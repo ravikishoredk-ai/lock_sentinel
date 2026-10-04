@@ -26,7 +26,7 @@ def send_email_alert(subject, html_content):
     }
     payload = {
         "sender": {"email": "alert@sentinel.com", "name": "Sentinel Security"},
-        "to": [{"email": "YOUR_PERSONAL_EMAIL@gmail.com", "name": "Admin"}], # CHANGE THIS
+        "to": [{"email": "ravikishore.rtl@gmail.com", "name": "Admin"}], # CHANGE THIS
         "subject": subject,
         "htmlContent": html_content
     }
