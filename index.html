@@ -95,12 +95,10 @@
         return;
       }
 
-      // Append timestamp to bypass caching so it always loads the newest photo
       img.src = currentSnapshotUrl + "?t=" + new Date().getTime();
       box.style.display = "block";
     }
 
-    // Ping the Render server every 2 seconds for status and IP updates
     setInterval(pollStatus, 2000);
     pollStatus();
   </script>
