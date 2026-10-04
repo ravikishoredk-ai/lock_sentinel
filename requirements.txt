@@ -1,6 +1,4 @@
-fastapi
-uvicorn
-websockets
-cloudinary
-python-multipart
+flask
+flask-cors
 requests
+gunicorn
