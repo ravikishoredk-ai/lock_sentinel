@@ -15,53 +15,232 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Lock Sentinel Dashboard</title>
+    <title>LockSentinel | Security Command Center</title>
     <style>
-        body { font-family: Arial, sans-serif; background: #0f172a; color: #f8fafc; text-align: center; padding: 20px; }
-        .card { background: #1e293b; max-width: 500px; margin: 0 auto; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-        .status { font-size: 24px; font-weight: bold; padding: 15px; border-radius: 8px; margin: 20px 0; }
-        .SAFE { background: #22c55e; color: white; }
-        .WARNING { background: #eab308; color: black; }
-        .ALARM { background: #ef4444; color: white; }
-        button { background: #3b82f6; color: white; border: none; padding: 12px 20px; font-size: 16px; border-radius: 6px; cursor: pointer; margin-top: 10px; }
-        button:hover { background: #2563eb; }
-        .btn-disarm { background: #10b981; }
-        .btn-disarm:hover { background: #059669; }
-        img { max-width: 100%; border-radius: 6px; margin-top: 15px; border: 2px solid #475569; }
+        :root {
+            --bg-primary: #090d16;
+            --bg-card: #131c31;
+            --border-color: #1e293b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --safe-color: #10b981;
+            --warning-color: #f59e0b;
+            --alarm-color: #ef4444;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .dashboard-container {
+            width: 100%;
+            max-width: 550px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 35px;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.6);
+            box-sizing: border-box;
+            text-align: center;
+        }
+
+        h2 {
+            margin-top: 0;
+            font-size: 24px;
+            color: #f1f5f9;
+        }
+
+        p.subtitle {
+            color: var(--text-muted);
+            font-size: 14px;
+            margin-bottom: 25px;
+        }
+
+        .status-badge {
+            font-size: 20px;
+            font-weight: 700;
+            padding: 16px;
+            border-radius: 10px;
+            margin: 20px 0;
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+        }
+
+        .SAFE { background: rgba(16, 185, 129, 0.15); color: var(--safe-color); border: 1px solid var(--safe-color); }
+        .WARNING { background: rgba(245, 158, 11, 0.15); color: var(--warning-color); border: 1px solid var(--warning-color); }
+        .ALARM { 
+            background: rgba(239, 68, 68, 0.2); 
+            color: var(--alarm-color); 
+            border: 1px solid var(--alarm-color); 
+            animation: pulse-animation 1.2s infinite; 
+        }
+
+        @keyframes pulse-animation {
+            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+            70% { transform: scale(1.02); box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+
+        .timer-box {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px dashed var(--warning-color);
+            border-radius: 8px;
+            padding: 12px;
+            margin: 15px 0;
+            font-size: 16px;
+            font-weight: bold;
+            color: var(--warning-color);
+            display: none;
+        }
+
+        .snapshot-section {
+            margin: 20px 0;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #0b1120;
+            border: 1px solid var(--border-color);
+            padding: 10px;
+            display: none;
+        }
+
+        .snapshot-section h3 {
+            font-size: 14px;
+            color: var(--text-muted);
+            margin: 0 0 10px 0;
+            text-transform: uppercase;
+        }
+
+        img {
+            width: 100%;
+            height: auto;
+            border-radius: 6px;
+            display: block;
+        }
+
+        .action-button {
+            background-color: var(--safe-color);
+            color: white;
+            border: none;
+            width: 100%;
+            padding: 14px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.2s, transform 0.1s;
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+            margin-top: 15px;
+        }
+
+        .action-button:hover { background-color: #059669; }
+        .action-button:active { transform: scale(0.98); }
+
+        .footer-note {
+            margin-top: 20px;
+            font-size: 11px;
+            color: #64748b;
+        }
     </style>
     <script>
+        let countdownInterval = null;
+        let remainingTime = 55;
+        let lastStatus = "{{ status }}";
+
+        function startCountdown(seconds) {
+            clearInterval(countdownInterval);
+            remainingTime = seconds;
+            const timerBox = document.getElementById('timer-box');
+            const countdownEl = document.getElementById('countdown');
+            timerBox.style.display = "block";
+
+            countdownInterval = setInterval(() => {
+                remainingTime--;
+                countdownEl.innerText = remainingTime;
+                if (remainingTime <= 0) {
+                    clearInterval(countdownInterval);
+                    timerBox.style.display = "none";
+                }
+            }, 1000);
+        }
+
+        function stopCountdown() {
+            clearInterval(countdownInterval);
+            document.getElementById('timer-box').style.display = "none";
+        }
+
+        // Poll backend status every 3 seconds
         setInterval(() => {
             fetch('/api/status')
                 .then(res => res.json())
                 .then(data => {
-                    document.getElementById('status-badge').innerText = "STATUS: " + data.status;
-                    document.getElementById('status-badge').className = "status " + data.status;
-                    if(data.snapshot_url) {
-                        document.getElementById('snapshot-img').src = data.snapshot_url;
-                        document.getElementById('snapshot-img').style.display = "block";
+                    const badge = document.getElementById('status-badge');
+                    badge.innerText = "STATUS: " + data.status;
+                    badge.className = "status-badge " + data.status;
+                    
+                    // Trigger timer if entering WARNING state fresh
+                    if (data.status === 'WARNING' && lastStatus !== 'WARNING') {
+                        startCountdown(55);
+                    } else if (data.status !== 'WARNING') {
+                        stopCountdown();
                     }
-                });
+                    lastStatus = data.status;
+
+                    const imgContainer = document.getElementById('snapshot-container');
+                    const imgElement = document.getElementById('snapshot-img');
+                    
+                    if (data.snapshot_url) {
+                        imgElement.src = data.snapshot_url;
+                        imgContainer.style.display = "block";
+                    } else {
+                        imgContainer.style.display = "none";
+                    }
+                })
+                .catch(err => console.error("Sync error:", err));
         }, 3000);
 
         function disarmSystem() {
             fetch('/api/disarm', { method: 'POST' })
                 .then(res => res.json())
-                .then(data => { alert("System Disarmed!"); location.reload(); });
+                .then(data => { 
+                    stopCountdown();
+                    alert("System successfully disarmed!"); 
+                    location.reload(); 
+                })
+                .catch(err => alert("Disarm request failed."));
         }
     </script>
 </head>
 <body>
-    <div class="card">
-        <h2>Lock Sentinel Security</h2>
-        <div id="status-badge" class="status {{ status }}">{{ status }}</div>
-        <p>Real-time ESP32-CAM monitoring active.</p>
+    <div class="dashboard-container">
+        <h2>🔒 LockSentinel Security</h2>
+        <p class="subtitle">Real-time ESP32-CAM monitoring active.</p>
         
-        <div>
-            <img id="snapshot-img" src="{{ snapshot_url }}" alt="Incident Snapshot" style="display: {{ 'block' if snapshot_url else 'none' }};">
+        <div id="status-badge" class="status-badge {{ status }}">
+            STATUS: {{ status }}
+        </div>
+
+        <div id="timer-box" class="timer-box">
+            ⏱️ Entry Grace Period: <span id="countdown">55</span>s remaining
         </div>
         
-        <br>
-        <button class="btn-disarm" onclick="disarmSystem()">Disarm Alarm</button>
+        <div id="snapshot-container" class="snapshot-section">
+            <h3>Latest Incident Snapshot</h3>
+            <img id="snapshot-img" src="" alt="ESP32 Breach Snapshot">
+        </div>
+        
+        <button class="action-button" onclick="disarmSystem()">Disarm Alarm</button>
+        
+        <div class="footer-note">
+            Securely connected via Render &bull; Local RAM Stream Active
+        </div>
     </div>
 </body>
 </html>
